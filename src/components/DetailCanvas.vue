@@ -1,30 +1,73 @@
 <template>
-  <div>
-    I2I input size:
-    <select v-model="selectedSize">
-      <option value="832x1216">832 x 1216</option>
-      <option value="1024x1024">1024 x 1024</option>
-      <option value="1216x832">1216 x 832</option>
-    </select>
-    <br>
-    Border Width (px): <input type="range" min="0" max="50" v-model.number="borderPixels"> {{ borderPixels }}
-    <br>
-    <button @click="addFeatheredRectToKonva">Add White Rectangle with Feathering</button>
-    <br>
-    <div v-if="this.rect">
-      Selected size: {{ Math.round(cropWidth / this.scale) }} x {{ Math.round(cropHeight / this.scale) }}
+  <div class="image-grid-container">
+    <div class="input-grid-container grid-container" id="input-container-parent">
+      <span>Input</span>
+      <div id="input-container"></div>
     </div>
-    <br>
+    <div class="mask-grid-container grid-container" id="mask-container-parent">
+      <span>Mask</span>
+      <div id="mask-container"></div>
+    </div>
+    <div class="mask-output-container grid-container">
+      <span>Output</span>
+      <div style=""></div>
+    </div>
+  </div>
+  <div style="display: grid; grid-template-rows: 1fr; gap: 10px; margin: 10px;">
+    <!-- I2I input size:
+    <select v-model="selectedSize">
+      <option value="1024x1024">1024 x 1024</option>
+    </select> -->
+    <div v-if="this.cropRect">
+      Selected position: [{{ cropX }} ~ {{ cropX + cropWidth }}), [{{ cropY }} ~ {{ cropY + cropHeight }})
+    </div>
     <button @click="uploadImage">Upload Image</button>
-    <br>
-    <div ref="container"></div>
   </div>
 </template>
+
+<style>
+.image-grid-container {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(256px, 1fr));
+  max-height: 100%;
+  gap: 10px;
+}
+
+.image-grid-container .grid-container {
+  display: grid;
+  grid-template-columns: 1fr;
+  text-align: center;
+  border: 1px solid grey;
+}
+</style>
 
 
 <script>
 import Konva from 'konva';
 import VueKonva from 'vue-konva';
+
+const canvasWidth = 1024;
+const canvasHeight = 1024;
+const cropAspect = 1.0;
+
+function fitStageIntoParentContainer(stage, parentId) {
+  var container = document.querySelector('#' + parentId);
+  if (container === null) return;
+
+  // fit stage into parent container
+  const containerWidth = container.offsetWidth - 2;
+  const containerHeight = container.offsetHeight - 2;
+
+  // but we also make the full scene visible
+  // so we need to scale all objects on canvas
+  const scaleX = containerWidth / canvasWidth;
+  const scaleY = containerHeight / canvasHeight;
+  const scale = Math.min(scaleX, scaleY)
+
+  stage.width(canvasWidth * scale);
+  stage.height(canvasHeight * scale);
+  stage.scale({ x: scale, y: scale });
+}
 
 export default {
   components: {
@@ -32,40 +75,54 @@ export default {
   },
   data() {
     return {
-      image: null,
-      selectedSize: '1024x1024',
-      i2iWidth: 1024,
-      i2iHeight: 1024,
+      // Input stage and crop settings
+      inputImage: null,
+      inputScale: 1.0,
+
+      inputStage: null,
+      inputStageLayer: null,
+      cropRect: null,
+      cropTransformer: null,
+
+      cropX: 0,
+      cropY: 0,
       cropWidth: 512,
       cropHeight: 512,
-      borderPixels: 0,
-      stage: null,
-      layer: null,
-      rect: null,
-      transformer: null
+
+      // Mask stage
+      maskStage: null,
+      maskImageLayer: null,
+      maskPaintLayer: null,
     };
   },
   mounted() {
-    this.stage = new Konva.Stage({
-      container: this.$refs.container,
-      width: window.innerWidth,
-      height: window.innerHeight
+    this.inputStage = new Konva.Stage({
+      container: 'input-container',
+      width: canvasWidth,
+      height: canvasHeight
     });
-    this.layer = new Konva.Layer();
-    this.stage.add(this.layer);
+    this.maskStage = new Konva.Stage({
+      container: 'mask-container',
+      width: canvasWidth,
+      height: canvasHeight
+    });
+    this.inputStageLayer = new Konva.Layer();
+    this.inputStage.add(this.inputStageLayer);
+    this.maskImageLayer = new Konva.Layer();
+    this.maskStage.add(this.maskImageLayer);
+    this.maskPaintLayer = new Konva.Layer();
+    this.maskStage.add(this.maskPaintLayer);
+    fitStageIntoParentContainer(this.inputStage, 'input-container-parent');
+    fitStageIntoParentContainer(this.maskStage, 'mask-container-parent')
+    window.addEventListener('resize', () => fitStageIntoParentContainer(this.inputStage, 'input-container-parent'));
   },
   watch: {
     selectedSize(newValue) {
       const [width, height] = newValue.split('x').map(Number);
       this.i2iWidth = width;
       this.i2iHeight = height;
-      this.updateRectSize();
+      this.initRectPos();
     },
-    borderPixels(newValue) {
-      this.borderPixels = newValue;
-      // console.log(newValue);
-      this.updateBorder();
-    }
   },
   methods: {
     uploadImage() {
@@ -73,13 +130,14 @@ export default {
       input.type = 'file';
       input.onchange = (e) => {
         const target = e.target;
+        if (target === null) return;
         const file = target.files ? target.files[0] : null;
         if (file) {
           let reader = new FileReader();
           reader.onload = (e) => {
             let img = new Image();
             img.onload = () => {
-              this.setupCanvas(img);
+              this.setupInputCanvas(img);
             };
             img.src = reader.result;
           };
@@ -88,154 +146,128 @@ export default {
       };
       input.click();
     },
-    setupCanvas(img) {
-      this.layer.destroyChildren(); // 清除所有子元素
-      this.image = img;
+    setupInputCanvas(img) {
+      this.inputStageLayer.destroyChildren(); // 清除所有子元素
+      this.inputImage = img;
 
       // 计算缩放比例以适应画板
-      const scaleX = this.stage.width() / img.width;
-      const scaleY = this.stage.height() / img.height;
-      this.scale = Math.min(scaleX, scaleY, 1); // 不放大图片
+      const scaleX = canvasWidth / img.width;
+      const scaleY = canvasHeight / img.height;
+      this.inputScale = Math.min(scaleX, scaleY, 1); // 不放大图片
 
-      let konvaImage = new Konva.Image({
+      let canvasImage = new Konva.Image({
         image: img,
         x: 0,
         y: 0,
-        width: img.width * this.scale,
-        height: img.height * this.scale
+        width: img.width * this.inputScale,
+        height: img.height * this.inputScale
       });
-      this.layer.add(konvaImage);
+      this.inputStageLayer.add(canvasImage);
       this.addCropRect();
     },
     addCropRect() {
-      if (this.rect) {
-        this.rect.destroy();
-        this.transformer.destroy();
+      if (this.cropRect) {
+        this.cropRect.destroy();
+        this.cropTransformer.destroy();
       }
 
-      this.rect = new Konva.Rect({
+      this.cropRect = new Konva.Rect({
         fill: 'rgba(0,0,255,0.5)',
         draggable: true,
-        stroke: 'rgba(255,0,0,0.5)',
-        strokeWidth: this.borderPixels * this.scale
       });
-      this.layer.add(this.rect);
+      this.inputStageLayer.add(this.cropRect);
 
-      this.rect.on('dragmove', () => {
+      this.cropRect.on('dragend', () => {
         // 限制拖拽范围
-        const rectX = this.rect.x();
-        const rectY = this.rect.y();
-        const rectWidth = this.rect.width() * this.rect.scaleX();
-        const rectHeight = this.rect.height() * this.rect.scaleY();
-        const imageWidth = this.image.width * this.scale;
-        const imageHeight = this.image.height * this.scale;
+        const rectX = this.cropRect.x();
+        const rectY = this.cropRect.y();
+        const rectWidth = this.cropRect.width();
+        const rectHeight = this.cropRect.height();
+        const imageWidth = this.inputImage.width * this.inputScale;
+        const imageHeight = this.inputImage.height * this.inputScale;
         const newX = Math.min(Math.max(0, rectX), imageWidth - rectWidth);
         const newY = Math.min(Math.max(0, rectY), imageHeight - rectHeight);
-        this.rect.x(newX);
-        this.rect.y(newY);
+        this.cropRect.x(newX);
+        this.cropRect.y(newY);
+        // 更新裁剪位置
+        this.updateCropPos();
+        this.stupMaskCanvas();
       });
 
-      this.rect.on('transformend', () => {
+      this.cropRect.on('transformend', () => {
         //限制缩放范围
-        const rectScale = this.rect.scaleX();
-        const imageWidth = this.image.width * this.scale;
-        const imageHeight = this.image.height * this.scale;
-        const rectX = this.rect.x();
-        const rectY = this.rect.y();
-        const newScale = Math.min(rectScale, (imageHeight - rectY) / this.rect.height(), (imageWidth - rectX) / this.rect.width());
-        this.rect.width(newScale * this.rect.width());
-        this.rect.height(newScale * this.rect.height());
-        this.rect.scaleX(1);
-        this.rect.scaleY(1);
-        // 更新尺寸显示
-        this.cropWidth = Math.round(this.rect.width());
-        this.cropHeight = Math.round(this.rect.height());
-        this.layer.draw();
+        const rectScale = this.cropRect.scaleX();
+        const imageWidth = this.inputImage.width * this.inputScale;
+        const imageHeight = this.inputImage.height * this.inputScale;
+        const rectX = this.cropRect.x();
+        const rectY = this.cropRect.y();
+        const newScale = Math.min(rectScale, (imageHeight - rectY) / this.cropRect.height(), (imageWidth - rectX) / this.cropRect.width());
+        this.cropRect.width(newScale * this.cropRect.width());
+        this.cropRect.height(newScale * this.cropRect.height());
+        this.cropRect.scaleX(1);
+        this.cropRect.scaleY(1);
+        this.inputStageLayer.draw();
+        // 更新裁剪位置
+        this.updateCropPos();
+        this.stupMaskCanvas();
       });
 
-      this.transformer = new Konva.Transformer({
+      this.cropTransformer = new Konva.Transformer({
         keepRatio: true,
         rotateEnabled: false,
         enabledAnchors: ['bottom-right'],
         minWidth: 10,
         minHeight: 10
       });
-      this.layer.add(this.transformer);
-      this.transformer.attachTo(this.rect);
-      this.updateRectSize();
-      this.layer.draw();
+      this.inputStageLayer.add(this.cropTransformer);
+      this.cropTransformer.attachTo(this.cropRect);
+      this.initRectPos();
+      this.inputStageLayer.draw();
+      this.setupMaskCanvas();
     },
-    updateRectSize() {
-      const ratio = this.i2iHeight / this.i2iWidth;
-      const imageWidth = this.image.width * this.scale;
-      const imageHeight = this.image.height * this.scale;
-      const width = Math.min(imageWidth, imageHeight / ratio) / 2;
-      const height = Math.min(imageHeight, imageWidth * ratio) / 2;
-      this.cropWidth = width;
-      this.cropHeight = height;
+    initRectPos() {
+      const ratio = cropAspect;
+      // Size of image in canvas
+      const imageWidth = this.inputImage.width * this.inputScale;
+      const imageHeight = this.inputImage.height * this.inputScale;
 
-      this.rect.width(width);
-      this.rect.height(height);
-      this.rect.x(width / 10);
-      this.rect.y(height / 10);
-      this.rect.scaleX(1);
-      this.rect.scaleY(1);
-      this.layer.draw();
+      const cropWidth = Math.min(imageWidth, imageHeight / ratio) / 2;
+      const cropHeight = Math.min(imageHeight, imageWidth * ratio) / 2;
+
+      this.cropRect.width(cropWidth);
+      this.cropRect.height(cropHeight);
+      this.cropRect.x(cropWidth / 10);
+      this.cropRect.y(cropHeight / 10);
+      this.cropRect.scaleX(1);
+      this.cropRect.scaleY(1);
+      this.inputStageLayer.draw();
     },
-    updateBorder() {
-      // this.layer.draw();
+    updateCropPos() {
+      this.cropX = Math.round(this.cropRect.x() / this.inputScale);
+      this.cropY = Math.round(this.cropRect.y() / this.inputScale);
+      this.cropWidth = Math.round(this.cropRect.width() / this.inputScale);
+      this.cropHeight = Math.round(this.cropRect.height() / this.inputScale);
     },
-    createFeatheredRectangle(width, height, featherWidth) {
-      // 创建一个canvas元素
+    stupMaskCanvas() {
+      this.maskImageLayer.destroyChildren(); // 清除所有子元素
+
+      // Create a 1024x1024 image of selection area
       const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
       const ctx = canvas.getContext('2d');
+      ctx.drawImage(this.inputImage, this.cropX, this.cropY, this.cropWidth, this.cropHeight, 0, 0, canvasWidth, canvasHeight);
 
-      // 创建ImageData用于像素操作
-      const imageData = ctx.createImageData(width, height);
-      const data = imageData.data;
+      const croppedImage = new Image();
+      croppedImage.src = canvas.toDataURL();
+      let canvasImage = new Konva.Image({
+        image: croppedImage,
+        x: 0,
+        y: 0,
+      })
 
-      // 填充像素
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const index = (y * width + x) * 4; // 每个像素点4个byte，索引位置
-          const distanceX = Math.min(x, width - x - 1); // 距离左右边界最近的距离
-          const distanceY = Math.min(y, height - y - 1); // 距离上下边界最近的距离
-          const distanceToEdge = Math.min(distanceX, distanceY); // 距离最近边界的距离
-          const alpha = Math.min(1, distanceToEdge / featherWidth); // 计算透明度
-          data[index] = 255;
-          data[index + 1] = 255
-          data[index + 2] = 255
-          data[index + 3] = alpha * 255; // alpha, 从0 (完全透明) 到255 (完全不透明)
-        }
-      }
-
-      // 将修改后的ImageData对象放回canvas中
-      ctx.putImageData(imageData, 0, 0);
-
-      return canvas;
-    },
-    addFeatheredRectToKonva() {
-      // 假设rect已经定义并包含x, y, width, height
-      const featherWidth = 20; // 你可以根据需要调整这个羽化宽度
-      const canvas = this.createFeatheredRectangle(this.rect.width(), this.rect.height(), featherWidth);
-
-      // 使用Canvas作为Konva.Image的图像源
-      const image = new Konva.Image({
-        x: this.rect.x(),
-        y: this.rect.y(),
-        image: canvas,
-        width: this.rect.width(),
-        height: this.rect.height(),
-      });
-
-      // 将图片添加到层上
-      this.layer.add(image);
-      this.layer.draw();
+      this.maskImageLayer.add(canvasImage);
     }
   }
 };
 </script>
-
-<style scoped></style>
