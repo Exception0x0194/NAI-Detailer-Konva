@@ -50,6 +50,8 @@ const canvasWidth = 1024;
 const canvasHeight = 1024;
 const cropAspect = 1.0;
 
+const brushSize = 100;
+
 function fitStageIntoParentContainer(stage, parentId) {
   var container = document.querySelector('#' + parentId);
   if (container === null) return;
@@ -67,6 +69,12 @@ function fitStageIntoParentContainer(stage, parentId) {
   stage.width(canvasWidth * scale);
   stage.height(canvasHeight * scale);
   stage.scale({ x: scale, y: scale });
+}
+
+function getScaledPointerPosition(stage) {
+  const pos = stage.getPointerPosition();
+  const scale = stage.scale();
+  return { x: pos.x / scale.x, y: pos.y / scale.y };
 }
 
 export default {
@@ -93,6 +101,7 @@ export default {
       maskStage: null,
       maskImageLayer: null,
       maskPaintLayer: null,
+      isPainting: false,
     };
   },
   mounted() {
@@ -110,11 +119,43 @@ export default {
     this.inputStage.add(this.inputStageLayer);
     this.maskImageLayer = new Konva.Layer();
     this.maskStage.add(this.maskImageLayer);
-    this.maskPaintLayer = new Konva.Layer();
+    this.maskPaintLayer = new Konva.Layer({ opacity: 0.5 });
     this.maskStage.add(this.maskPaintLayer);
+    // 绘图事件
+    var lastLine;
+    this.maskStage.on('mousedown touchstart', (e) => {
+      this.isPainting = true;
+      var pos = getScaledPointerPosition(this.maskStage);
+      lastLine = new Konva.Line({
+        stroke: 'rgb(255,255,255)',
+        strokeWidth: brushSize,
+        globalCompositeOperation: 'source-over',
+        // round cap for smoother lines
+        lineCap: 'round',
+        lineJoin: 'round',
+        // add point twice, so we have some drawings even on a simple click
+        points: [pos.x, pos.y, pos.x, pos.y],
+      });
+      this.maskPaintLayer.add(lastLine);
+    });
+    this.maskStage.on('mouseup touchend', () => {
+      this.isPainting = false;
+    });
+    // and core function - drawing
+    this.maskStage.on('mousemove touchmove', (e) => {
+      if (!this.isPainting) {
+        return;
+      }
+      // prevent scrolling on touch devices
+      e.evt.preventDefault();
+      const pos = getScaledPointerPosition(this.maskStage);
+      var newPoints = lastLine.points().concat([pos.x, pos.y]);
+      lastLine.points(newPoints);
+    });
+
     fitStageIntoParentContainer(this.inputStage, 'input-container-parent');
-    fitStageIntoParentContainer(this.maskStage, 'mask-container-parent')
-    window.addEventListener('resize', () => fitStageIntoParentContainer(this.inputStage, 'input-container-parent'));
+    fitStageIntoParentContainer(this.maskStage, 'mask-container-parent');
+    window.addEventListener('resize', () => { fitStageIntoParentContainer(this.inputStage, 'input-container-parent'); fitStageIntoParentContainer(this.maskStage, 'mask-container-parent'); });
   },
   watch: {
     selectedSize(newValue) {
@@ -191,7 +232,7 @@ export default {
         this.cropRect.y(newY);
         // 更新裁剪位置
         this.updateCropPos();
-        this.stupMaskCanvas();
+        this.setupMaskCanvas();
       });
 
       this.cropRect.on('transformend', () => {
@@ -209,7 +250,7 @@ export default {
         this.inputStageLayer.draw();
         // 更新裁剪位置
         this.updateCropPos();
-        this.stupMaskCanvas();
+        this.setupMaskCanvas();
       });
 
       this.cropTransformer = new Konva.Transformer({
@@ -248,7 +289,7 @@ export default {
       this.cropWidth = Math.round(this.cropRect.width() / this.inputScale);
       this.cropHeight = Math.round(this.cropRect.height() / this.inputScale);
     },
-    stupMaskCanvas() {
+    setupMaskCanvas() {
       this.maskImageLayer.destroyChildren(); // 清除所有子元素
 
       // Create a 1024x1024 image of selection area
