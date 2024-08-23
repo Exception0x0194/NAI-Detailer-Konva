@@ -28,7 +28,7 @@
 <style>
 .image-grid-container {
   display: grid;
-  grid-template-columns: repeat(3, minmax(256px, 1fr));
+  grid-template-columns: repeat(3, 512px);
   max-height: 100%;
   gap: 10px;
 }
@@ -157,15 +157,14 @@ export default {
     fitStageIntoParentContainer(this.maskStage, 'mask-container-parent');
     window.addEventListener('resize', () => { fitStageIntoParentContainer(this.inputStage, 'input-container-parent'); fitStageIntoParentContainer(this.maskStage, 'mask-container-parent'); });
   },
-  watch: {
-    selectedSize(newValue) {
-      const [width, height] = newValue.split('x').map(Number);
-      this.i2iWidth = width;
-      this.i2iHeight = height;
-      this.initRectPos();
-    },
-  },
+  watch: {},
   methods: {
+    initInputStage() {
+
+    },
+    initMaskStage() {
+
+    },
     uploadImage() {
       let input = document.createElement('input');
       input.type = 'file';
@@ -179,6 +178,8 @@ export default {
             let img = new Image();
             img.onload = () => {
               this.setupInputCanvas(img);
+              this.resetMask();
+              this.setupMaskBackground();
             };
             img.src = reader.result;
           };
@@ -232,7 +233,7 @@ export default {
         this.cropRect.y(newY);
         // 更新裁剪位置
         this.updateCropPos();
-        this.setupMaskCanvas();
+        this.setupMaskBackground();
       });
 
       this.cropRect.on('transformend', () => {
@@ -250,7 +251,7 @@ export default {
         this.inputStageLayer.draw();
         // 更新裁剪位置
         this.updateCropPos();
-        this.setupMaskCanvas();
+        this.setupMaskBackground();
       });
 
       this.cropTransformer = new Konva.Transformer({
@@ -264,7 +265,6 @@ export default {
       this.cropTransformer.attachTo(this.cropRect);
       this.initRectPos();
       this.inputStageLayer.draw();
-      this.setupMaskCanvas();
     },
     initRectPos() {
       const ratio = cropAspect;
@@ -289,16 +289,16 @@ export default {
       this.cropWidth = Math.round(this.cropRect.width() / this.inputScale);
       this.cropHeight = Math.round(this.cropRect.height() / this.inputScale);
     },
-    setupMaskCanvas() {
-      this.maskImageLayer.destroyChildren(); // 清除所有子元素
-
+    setupMaskBackground() {
+      // Clear background
+      this.maskImageLayer.destroyChildren();
       // Create a 1024x1024 image of selection area
       const canvas = document.createElement('canvas');
       canvas.width = canvasWidth;
       canvas.height = canvasHeight;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(this.inputImage, this.cropX, this.cropY, this.cropWidth, this.cropHeight, 0, 0, canvasWidth, canvasHeight);
-
+      // Draw background onto stage
       const croppedImage = new Image();
       croppedImage.src = canvas.toDataURL();
       let canvasImage = new Konva.Image({
@@ -308,6 +308,10 @@ export default {
       })
 
       this.maskImageLayer.add(canvasImage);
+    },
+    resetMask(){
+      // Clear ueser input
+      this.maskPaintLayer.destroyChildren();
     }
   }
 };
