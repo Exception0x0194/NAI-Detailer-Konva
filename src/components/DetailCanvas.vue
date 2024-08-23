@@ -14,10 +14,6 @@
     </div>
   </div>
   <div style="display: grid; grid-template-rows: 1fr; gap: 10px; margin: 10px;">
-    <!-- I2I input size:
-    <select v-model="selectedSize">
-      <option value="1024x1024">1024 x 1024</option>
-    </select> -->
     <div v-if="this.cropRect">
       Selected position: [{{ cropX }} ~ {{ cropX + cropWidth }}), [{{ cropY }} ~ {{ cropY + cropHeight }})
     </div>
@@ -115,16 +111,25 @@ export default {
       width: canvasWidth,
       height: canvasHeight
     });
+    // Input image
     this.inputStageLayer = new Konva.Layer();
     this.inputStage.add(this.inputStageLayer);
+    // Mask image background
     this.maskImageLayer = new Konva.Layer();
     this.maskStage.add(this.maskImageLayer);
-    this.maskPaintLayer = new Konva.Layer({ opacity: 0.5 });
+    // Mask stage paints
+    this.maskPaintLayer = new Konva.Layer();
     this.maskStage.add(this.maskPaintLayer);
-    // 绘图事件
+    this.maskPaintGroup = null;
+    // Mask drawing
     var lastLine;
     this.maskStage.on('mousedown touchstart', (e) => {
       this.isPainting = true;
+      if (this.maskPaintGroup == null) {
+        // Use cached groups to avoid overlapping strokes
+        this.maskPaintGroup = new Konva.Group({opacity:0.5});
+        this.maskPaintLayer.add(this.maskPaintGroup);
+      }
       var pos = getScaledPointerPosition(this.maskStage);
       lastLine = new Konva.Line({
         stroke: 'rgb(255,255,255)',
@@ -136,7 +141,8 @@ export default {
         // add point twice, so we have some drawings even on a simple click
         points: [pos.x, pos.y, pos.x, pos.y],
       });
-      this.maskPaintLayer.add(lastLine);
+      this.maskPaintGroup.add(lastLine);
+      this.maskPaintGroup.cache();
     });
     this.maskStage.on('mouseup touchend', () => {
       this.isPainting = false;
@@ -151,6 +157,7 @@ export default {
       const pos = getScaledPointerPosition(this.maskStage);
       var newPoints = lastLine.points().concat([pos.x, pos.y]);
       lastLine.points(newPoints);
+      this.maskPaintGroup.cache();
     });
 
     fitStageIntoParentContainer(this.inputStage, 'input-container-parent');
@@ -159,12 +166,6 @@ export default {
   },
   watch: {},
   methods: {
-    initInputStage() {
-
-    },
-    initMaskStage() {
-
-    },
     uploadImage() {
       let input = document.createElement('input');
       input.type = 'file';
@@ -178,7 +179,7 @@ export default {
             let img = new Image();
             img.onload = () => {
               this.setupInputCanvas(img);
-              this.resetMask();
+              this.resetMaskPaint();
               this.setupMaskBackground();
             };
             img.src = reader.result;
@@ -309,9 +310,10 @@ export default {
 
       this.maskImageLayer.add(canvasImage);
     },
-    resetMask(){
+    resetMaskPaint(){
       // Clear ueser input
       this.maskPaintLayer.destroyChildren();
+      this.maskPaintGroup = null;
     }
   }
 };
